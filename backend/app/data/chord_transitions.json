@@ -1,0 +1,54 @@
+{
+  "source": "GuitarSet verified chord annotations (expert-verified layer)",
+  "recordings": 360,
+  "chords": [
+    "C",
+    "G",
+    "Am",
+    "F"
+  ],
+  "counts": {
+    "C": {
+      "G": 58,
+      "Am": 0,
+      "F": 44
+    },
+    "G": {
+      "C": 30,
+      "Am": 42,
+      "F": 2
+    },
+    "Am": {
+      "C": 0,
+      "G": 0,
+      "F": 0
+    },
+    "F": {
+      "C": 32,
+      "G": 38,
+      "Am": 0
+    }
+  },
+  "probabilities": {
+    "C": {
+      "G": 0.569,
+      "Am": 0.0,
+      "F": 0.431
+    },
+    "G": {
+      "C": 0.405,
+      "Am": 0.568,
+      "F": 0.027
+    },
+    "Am": {
+      "C": 0.0,
+      "G": 0.0,
+      "F": 0.0
+    },
+    "F": {
+      "C": 0.457,
+      "G": 0.543,
+      "Am": 0.0
+    }
+  }
+}

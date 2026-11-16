@@ -1,0 +1,25 @@
+# python
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# frontend
+node_modules/
+dist/
+
+# local data and models
+data/raw/
+models/*.pt
+models/*.pth
+models/*.onnx
+frontend/public/models/
+*.sqlite3
+*.db
+.env
+
+# notebooks
+.ipynb_checkpoints/
+
+# editor
+.vscode/

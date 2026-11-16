@@ -1,0 +1,8 @@
+# these packages support the local api layer in the fretfly system.
+# fastapi and uvicorn run the browser-facing service during development.
+# pytest and httpx provide the focused validation boundary for this service.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.8,<3
+pytest>=8,<9
+httpx>=0.27,<1

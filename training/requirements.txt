@@ -1,0 +1,11 @@
+# these packages support the offline training notebooks in training/notebooks.
+# kept apart from backend/requirements.txt so the local api stays light.
+# install torch first from the cpu index: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+numpy>=1.26
+matplotlib>=3.8
+jupyter>=1.0
+nbconvert>=7.16
+ipykernel>=6.29
+nbformat>=5.10
+scipy>=1.11
