@@ -118,13 +118,54 @@ The WASM runtime is loaded from jsDelivr during development. Hand landmarks are 
 
 The camera panel displays the live `getUserMedia` video underneath the landmark overlay. It separates the expected fretboard/fretting region from the strumming region. Use `calibrate guitar` after arranging the instrument in the frame to mark the current geometry as ready for the next detector. Use the `camera upright` / `camera inverted` control when the webcam or phone is mounted upside down. These are user-selected calibrations because a webcam stream does not reliably expose its physical mounting angle or guitar geometry on its own.
 
+See [COPILOT_CONTEXT.md](COPILOT_CONTEXT.md) for architecture boundaries, privacy rules, and implementation guidance.
+
 ## Roadmap
 
-1. Add MediaPipe hand landmarks over the camera feed.
-2. Add browser audio feature extraction and confidence states.
-3. Connect the frontend to the FastAPI prediction contract.
-4. Persist local calibration and practice history in SQLite.
-5. Add Jupyter and PyTorch experiments for custom audio and multimodal models.
-6. Add OpenCV guitar-neck calibration and evaluation tooling.
+Green boxes are done, yellow are next, and red are decisions that block a phase. Arrows show what each phase needs first.
 
-See [COPILOT_CONTEXT.md](COPILOT_CONTEXT.md) for architecture boundaries, privacy rules, and implementation guidance.
+```mermaid
+flowchart TD
+	P0["Phase 0: foundation<br/>frontend, backend, notebooks, transition table"]:::done
+	D1{{"Decide: Am fallback"}}:::decision
+	D2{{"Decide: browser inference<br/>(recommended)"}}:::decision
+	P1["Phase 1: suggestion engine<br/>backend endpoint, replace hardcoded next chord"]:::next
+	P2["Phase 2: browser audio<br/>Web Audio, chroma in TypeScript, ONNX Runtime Web"]:::next
+	P3["Phase 3: own recordings<br/>labeling mode, session-based split"]:::next
+	P4["Phase 4: vision gate<br/>hand in fretboard zone"]:::next
+	P5["Phase 5: fusion<br/>audio and vision to one chord or Unknown"]:::next
+	P6["Phase 6: live loop<br/>smoothed chord, suggestion, status"]:::next
+	P7["Phase 7: SQLite<br/>calibration and practice history"]:::next
+	P8["Phase 8: tests and release<br/>README, privacy notes, license check"]:::next
+	LATER["Later<br/>multimodal PyTorch model, more chords, capo and tuning"]
+
+	P0 --> D1
+	P0 --> D2
+	D1 --> P1
+	D2 --> P2
+	P2 --> P3
+	P3 --> P5
+	P4 --> P5
+	P1 --> P6
+	P5 --> P6
+	P6 --> P7
+	P7 --> P8
+	P8 --> LATER
+
+	classDef done fill:#d4edda,stroke:#2e7d32,color:#1b1b1b
+	classDef next fill:#fff3cd,stroke:#b58900,color:#1b1b1b
+	classDef decision fill:#f8d7da,stroke:#b71c1c,color:#1b1b1b
+```
+
+| Phase | Goal | Done when |
+|---|---|---|
+| 0. Foundation | App shell, backend, training pipeline, transition table | Complete |
+| 1. Suggestion engine | Backend returns the likely next chord from the transition table | Each vocabulary chord returns a valid suggestion, and the frontend uses the endpoint |
+| 2. Browser audio | Mic audio becomes chroma in the browser and runs the exported model | Browser and Python chroma match on saved clips, and the app shows a chord with confidence or `Unknown` |
+| 3. Own recordings | Record and label your own clips for the app's setup | The model is validated on a separate recording session and the confusion matrix is reported |
+| 4. Vision gate | Use hand position in the fretboard zone as evidence | Measured effect on wrong audio guesses, with the gate on and off |
+| 5. Fusion | Combine audio and vision into one result | Compared audio-only, vision-only, and fused accuracy on recorded sessions |
+| 6. Live loop | Smooth the chord estimate and update suggestions live | The chord doesn't flicker, and the status panel shows the real state |
+| 7. Persistence | Move calibration and practice history to SQLite | Calibration survives a reload, and sessions are stored locally |
+| 8. Release | Tests, docs, privacy notes, and the license check | Tests pass on a clean install, and the repo is ready to share |
+| Later | Multimodal model, more chords, capo and tuning | Each item has its own evaluation before it is claimed |
