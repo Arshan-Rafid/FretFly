@@ -2,26 +2,22 @@
 // it connects browser media controls to the chord readout and recommendations.
 // it also renders the fretboard reference used by the frontend experience.
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision'
-import { useEffect, useRef, useState, type MouseEvent } from 'react'
-
-type ChordName = 'C' | 'G' | 'Am' | 'F'
-type StringPosition = number | 'x'
-
-type ChordDefinition = {
-  name: ChordName
-  positions: StringPosition[]
-  suggested: ChordName
-  color: string
-}
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { QUALITIES, formatChord, noteName, parseChord, sameChord, transposeChord, type Chord, type Quality } from './theory/chords'
+import { inferKeys, keyLabel, keyUsesFlats } from './theory/keys'
+import { suggestChords, type Suggestion } from './theory/suggest'
+import { diagramLayout, voicingsFor, type Voicing } from './theory/voicings'
+import { SILENCE_RMS } from './audio/analyze'
+import { useChordListener } from './audio/useChordListener'
 
 type CalibrationPoint = { x: number; y: number }
 
-// keep the first chord vocabulary local and data-driven for easy model replacement
-const CHORDS: Record<ChordName, ChordDefinition> = {
-  C: { name: 'C', positions: ['x', 3, 2, 0, 1, 0], suggested: 'G', color: '#f3b562' },
-  G: { name: 'G', positions: [3, 2, 0, 0, 0, 3], suggested: 'Am', color: '#76c893' },
-  Am: { name: 'Am', positions: ['x', 0, 2, 2, 1, 0], suggested: 'F', color: '#70a9a1' },
-  F: { name: 'F', positions: [1, 3, 3, 2, 1, 1], suggested: 'C', color: '#f28482' },
+const ROOTS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+const QUALITY_LIST = Object.keys(QUALITIES) as Quality[]
+
+// each root gets its own hue so a chord keeps one color everywhere it appears
+function chordColor(chord: Chord): string {
+  return `hsl(${chord.root * 30} 62% 70%)`
 }
 
 const HAND_CONNECTIONS = [
@@ -38,7 +34,13 @@ function App() {
   const handLandmarkerRef = useRef<HandLandmarker | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const lastVideoTimeRef = useRef(-1)
-  const [selectedChord, setSelectedChord] = useState<ChordName>('C')
+  const [history, setHistory] = useState<Chord[]>(() => [parseChord('C')!])
+  // manual capo is the fallback until the camera can detect one on its own
+  const [capoOn, setCapoOn] = useState(false)
+  const [capoText, setCapoText] = useState('2')
+  const [pickQuality, setPickQuality] = useState<Quality>('maj')
+  const [voicingIndex, setVoicingIndex] = useState(0)
+  const [audioStream, setAudioStream] = useState<MediaStream | null>(null)
   const [cameraState, setCameraState] = useState('camera offline')
   const [cameraError, setCameraError] = useState('')
   const [cameraInverted, setCameraInverted] = useState(false)
@@ -46,8 +48,44 @@ function App() {
   const [calibrationPoints, setCalibrationPoints] = useState<CalibrationPoint[]>([])
   const [isCalibrating, setIsCalibrating] = useState(false)
 
-  const chord = CHORDS[selectedChord]
-  const confidence = 82
+  const keyEstimates = useMemo(() => inferKeys(history), [history])
+  const suggestions = useMemo(() => suggestChords(history, 5, keyEstimates), [history, keyEstimates])
+  const topKey = keyEstimates[0]
+  const currentChord = history[history.length - 1]
+  const capoNumber = Number(capoText)
+  const capoValid = Number.isInteger(capoNumber) && capoNumber >= 1 && capoNumber <= 12
+  const capo = capoOn && capoValid ? capoNumber : 0
+  // history holds sounding chords, since theory depends on pitch; shapes are what the hand plays
+  const currentSymbol = formatChord(currentChord, topKey ? keyUsesFlats(topKey.key) : false)
+  const shapeChord = transposeChord(currentChord, -capo)
+  const shapeSymbol = formatChord(shapeChord)
+  const voicings = useMemo(() => voicingsFor(shapeChord), [shapeChord.root, shapeChord.quality])
+  const voicing: Voicing | undefined = voicings[Math.min(voicingIndex, voicings.length - 1)]
+  const accent = chordColor(currentChord)
+
+  // every chord played, picked, or tapped from a suggestion extends the running progression
+  function playChord(next: Chord) {
+    setVoicingIndex(0)
+    setHistory((previous) => (sameChord(previous[previous.length - 1], next) ? previous : [...previous, next]))
+  }
+
+  // tapping a shape sounds higher by the capo fret
+  function playShape(shape: Chord) {
+    playChord(transposeChord(shape, capo))
+  }
+
+  // the microphone hears sounding pitch, so a heard chord goes straight into the progression
+  const listener = useChordListener(audioStream, playChord)
+  const heard = listener.analysis?.recognition ?? null
+  const isQuiet = listener.analysis ? listener.analysis.rms < SILENCE_RMS : true
+  const flats = topKey ? keyUsesFlats(topKey.key) : false
+  const headline = listener.active ? (heard?.chord ? formatChord(heard.chord, flats) : isQuiet ? '–' : 'Unknown') : currentSymbol
+  const headlineColor = listener.active && heard?.chord ? chordColor(heard.chord) : accent
+  const confidencePercent = listener.active ? Math.round((heard?.confidence ?? 0) * 100) : 0
+
+  function startOver() {
+    setHistory([currentChord])
+  }
 
   function beginCalibration() {
     setCalibrationPoints([])
@@ -179,11 +217,16 @@ function App() {
     try {
       const previousStream = videoRef.current?.srcObject as MediaStream | null
       previousStream?.getTracks().forEach((track) => track.stop())
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      // browser voice processing damages guitar tone, so echo cancellation, noise suppression, and gain control stay off
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      })
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         await videoRef.current.play()
       }
+      setAudioStream(stream)
       setCameraState('camera and microphone live')
       await initializeHandTracking()
     } catch {
@@ -234,6 +277,8 @@ function App() {
             <button className="primary-button" onClick={startCamera}>start camera + mic <span>↗</span></button>
             <button className="camera-toggle" onClick={() => setCameraInverted((inverted) => !inverted)} aria-pressed={cameraInverted}>{cameraInverted ? 'camera inverted' : 'camera upright'} <span>↻</span></button>
             <button className="camera-toggle" onClick={beginCalibration} aria-pressed={isCalibrating}>{isCalibrating ? `click corner ${calibrationPoints.length + 1}/4` : guitarCalibrated ? 'recalibrate guitar' : 'calibrate guitar'} <span>⌖</span></button>
+            <button className="camera-toggle" onClick={() => setCapoOn((on) => !on)} aria-pressed={capoOn}>{capoOn ? 'capo on' : 'capo off'} <span>⊓</span></button>
+            {capoOn && <label className={`capo-field${capoValid ? '' : ' invalid'}`}>fret <input type="number" min={1} max={12} inputMode="numeric" value={capoText} onChange={(event) => setCapoText(event.target.value)} aria-label="capo fret" /></label>}
             {cameraError && <span className="error-text">{cameraError}</span>}
           </div>
         </div>
@@ -242,23 +287,39 @@ function App() {
           <div className="panel-heading"><div><span className="signal-icon">◌</span> fused readout</div><span className="mono">baseline / 0.1</span></div>
           <div className="detected-block">
             <p className="eyebrow">detected chord</p>
-            <div className="detected-chord" style={{ color: chord.color }}>{chord.name}<span>major / open position</span></div>
-            <div className="confidence-row"><span>confidence</span><strong>{confidence}%</strong></div>
-            <div className="confidence-bar"><span style={{ width: `${confidence}%`, background: chord.color }} /></div>
+            <div className="detected-chord" style={{ color: headlineColor }}>{headline}<span>{listener.active ? `heard now · progression is at ${currentSymbol}` : topKey ? `likely key: ${keyLabel(topKey.key)}` : 'play a chord'}{capo > 0 ? ` · ${shapeSymbol} shape, capo ${capo}` : ''}</span></div>
+            <div className="confidence-row"><span>confidence</span><strong>{listener.active ? `${confidencePercent}%` : 'mic off'}</strong></div>
+            <div className="confidence-bar"><span style={{ width: `${confidencePercent}%`, background: headlineColor }} /></div>
+            {listener.active && listener.analysis && (
+              <div className="listen-panel">
+                <div className="level-bar" aria-label="microphone level"><span style={{ width: `${Math.min(100, listener.analysis.rms * 400)}%` }} /></div>
+                <div className="chroma-bars" aria-label="notes heard">{listener.analysis.chroma.map((value, pitch) => <div key={pitch} className="chroma-bar"><span style={{ height: `${Math.round(value * 100)}%` }} /><small>{noteName(pitch)}</small></div>)}</div>
+                <p className="candidates">{isQuiet ? 'strum a chord, close to the microphone' : heard && heard.candidates.length > 1 ? `also close: ${heard.candidates.slice(1, 4).map((candidate) => formatChord(candidate.chord, flats)).join(' · ')}` : ''}</p>
+              </div>
+            )}
           </div>
           <div className="next-block">
             <p className="eyebrow">try next</p>
-            <div className="next-chord"><span className="arrow">→</span><strong>{chord.suggested}</strong><span>smooth transition</span></div>
+            <div className="suggestion-list">
+              {suggestions.map((suggestion) => <SuggestionRow key={suggestion.symbol} suggestion={suggestion} shape={capo > 0 ? formatChord(transposeChord(suggestion.chord, -capo)) : null} onPlay={() => playChord(suggestion.chord)} />)}
+            </div>
+            <div className="progression-row">
+              <span className="progression">{history.slice(-8).map((played) => formatChord(played, topKey ? keyUsesFlats(topKey.key) : false)).join(' → ')}</span>
+              {history.length > 1 && <button className="camera-toggle" onClick={startOver}>start over</button>}
+            </div>
           </div>
-          <div className="signal-list"><div><span className="signal-dot visual" /> hand position <b>ready</b></div><div><span className="signal-dot audio" /> microphone <b>standby</b></div><div><span className="signal-dot fusion" /> guitar geometry <b>{guitarCalibrated ? 'calibrated' : 'manual guide'}</b></div></div>
+          <div className="signal-list"><div><span className="signal-dot visual" /> hand position <b>ready</b></div><div><span className="signal-dot audio" /> microphone <b>{listener.active ? (isQuiet ? 'quiet' : 'listening') : 'off'}</b></div><div><span className="signal-dot fusion" /> guitar geometry <b>{guitarCalibrated ? 'calibrated' : 'manual guide'}</b></div></div>
         </aside>
       </section>
 
       <section className="diagram-section">
-        <div className="section-heading"><div><p className="eyebrow">fretboard reference</p><h3>Shape library</h3></div><p>select a shape to explore the progression</p></div>
+        <div className="section-heading"><div><p className="eyebrow">fretboard reference</p><h3>Chord library</h3></div><p>every root and quality in standard tuning. pick one, or tap a suggestion, to keep building the progression</p></div>
         <div className="shape-layout">
-          <div className="chord-tabs">{(Object.keys(CHORDS) as ChordName[]).map((name) => <button key={name} className={name === selectedChord ? 'active' : ''} onClick={() => setSelectedChord(name)}>{name}</button>)}</div>
-          <ChordDiagram chord={chord} />
+          <div className="chord-picker">
+            <div className="chord-tabs">{ROOTS.map((root) => <button key={root} className={root === shapeChord.root && pickQuality === shapeChord.quality ? 'active' : ''} onClick={() => playShape({ root, quality: pickQuality })}>{noteName(root)}</button>)}</div>
+            <label className="quality-field">quality <select value={pickQuality} onChange={(event) => setPickQuality(event.target.value as Quality)}>{QUALITY_LIST.map((quality) => <option key={quality} value={quality}>{QUALITIES[quality].suffix || 'major'}{QUALITIES[quality].suffix === 'm' ? ' (minor)' : ''}</option>)}</select></label>
+          </div>
+          {voicing ? <ChordDiagram name={shapeSymbol} voicing={voicing} color={accent} index={Math.min(voicingIndex, voicings.length - 1)} total={voicings.length} onStep={(step) => setVoicingIndex((index) => (index + step + voicings.length) % voicings.length)} /> : <div className="diagram-card"><div className="diagram-title"><strong>{shapeSymbol}</strong><span>no easy shape found</span></div><p>no playable fingering fit in four frets and four fingers. the suggestion engine still works for this chord.</p></div>}
         </div>
       </section>
 
@@ -267,9 +328,46 @@ function App() {
   )
 }
 
-function ChordDiagram({ chord }: { chord: ChordDefinition }) {
-  // map chord positions onto a stable six-string fretboard layout
-  return <div className="diagram-card"><div className="diagram-title"><strong>{chord.name}</strong><span>standard tuning · E A D G B E</span></div><div className="diagram"><div className="nut" />{[0, 1, 2, 3, 4].map((fret) => <div className="fret" key={fret} />)}{[0, 1, 2, 3, 4, 5].map((stringIndex) => <div className="string" key={stringIndex} style={{ left: `${14 + stringIndex * 14.4}%` }} />)}{chord.positions.map((position, index) => position !== 0 && position !== 'x' && <span className="finger" key={index} style={{ left: `${14 + index * 14.4}%`, top: `${19 + (position - 1) * 17}%`, background: chord.color }}>{position}</span>)}{chord.positions.map((position, index) => position === 0 && <span className="open" key={index} style={{ left: `${14 + index * 14.4}%` }}>o</span>)}{chord.positions.map((position, index) => position === 'x' && <span className="muted" key={index} style={{ left: `${14 + index * 14.4}%` }}>×</span>)}</div></div>
+function SuggestionRow({ suggestion, shape, onPlay }: { suggestion: Suggestion; shape: string | null; onPlay: () => void }) {
+  // each suggestion shows its role and the reason, so the player learns why it fits
+  return (
+    <button className={`suggestion-row ${suggestion.origin}`} onClick={onPlay}>
+      <strong>{suggestion.symbol}{shape && <small>play {shape}</small>}</strong>
+      <span className="suggestion-roman">{suggestion.roman}{suggestion.origin !== 'diatonic' ? ` · ${suggestion.origin}` : ''}</span>
+      <span className="suggestion-reason">{suggestion.reason}</span>
+      <span className="suggestion-bar"><span style={{ width: `${Math.round(suggestion.score * 100)}%` }} /></span>
+    </button>
+  )
+}
+
+function ChordDiagram({ name, voicing, color, index, total, onStep }: { name: string; voicing: Voicing; color: string; index: number; total: number; onStep: (step: number) => void }) {
+  // place the shape on a four-fret diagram and show a fret number when it sits up the neck
+  const { baseFret, relative, barre } = diagramLayout(voicing)
+  const stringLeft = (stringIndex: number) => `${14 + stringIndex * 14.4}%`
+  const fretTop = (fret: number) => `${19 + (fret - 1) * 17}%`
+  return (
+    <div className="diagram-card">
+      <div className="diagram-title">
+        <strong>{name}</strong>
+        <span>standard tuning · E A D G B E</span>
+        <div className="voicing-nav">
+          <button className="camera-toggle" onClick={() => onStep(-1)} disabled={total < 2} aria-label="previous shape">‹</button>
+          <span>shape {index + 1} of {total} · {voicing.fingers} {voicing.fingers === 1 ? 'finger' : 'fingers'}{voicing.barre ? ' · barre' : ''}</span>
+          <button className="camera-toggle" onClick={() => onStep(1)} disabled={total < 2} aria-label="next shape">›</button>
+        </div>
+      </div>
+      <div className="diagram">
+        <div className={baseFret > 1 ? 'nut thin' : 'nut'} />
+        {baseFret > 1 && <span className="fret-label">{baseFret}fr</span>}
+        {[0, 1, 2, 3, 4].map((fret) => <div className="fret" key={fret} />)}
+        {[0, 1, 2, 3, 4, 5].map((stringIndex) => <div className="string" key={stringIndex} style={{ left: stringLeft(stringIndex) }} />)}
+        {barre && <span className="barre" style={{ left: stringLeft(barre.from), width: `calc(${(barre.to - barre.from) * 14.4}% + 25px)`, top: fretTop(barre.fret), background: color }} />}
+        {relative.map((position, stringIndex) => typeof position === 'number' && position > 0 && <span className="finger" key={`f${stringIndex}`} style={{ left: stringLeft(stringIndex), top: fretTop(position), background: color }}>{position + baseFret - 1}</span>)}
+        {relative.map((position, stringIndex) => position === 0 && <span className="open" key={`o${stringIndex}`} style={{ left: stringLeft(stringIndex) }}>o</span>)}
+        {relative.map((position, stringIndex) => position === 'x' && <span className="muted" key={`x${stringIndex}`} style={{ left: stringLeft(stringIndex) }}>×</span>)}
+      </div>
+    </div>
+  )
 }
 
 export default App

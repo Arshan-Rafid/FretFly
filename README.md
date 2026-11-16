@@ -7,13 +7,17 @@ A free, local-first guitar practice assistant that combines webcam hand tracking
 The repository currently contains the first runnable foundation:
 
 - React and TypeScript frontend with a live camera permission flow.
-- Manual chord-shape library for `C`, `G`, `Am`, and `F`.
-- Data-driven fretboard diagram rendering.
+- A generated chord library in `frontend/src/theory/voicings.ts`: playable fingerings for every root and 13 qualities (major, minor, 7th, maj7, m7, dim, aug, sus, and more) in standard tuning, ranked by ease, with up to four alternatives each.
+- Data-driven fretboard diagrams that show barres and a fret number for shapes up the neck.
+- A manual capo control (on/off and fret). Chords are tracked by sounding pitch, and suggestions show which shape to play.
 - MediaPipe hand-landmark integration with a local model asset boundary.
 - FastAPI local health and demo prediction endpoints.
+- A theory suggestion engine in `frontend/src/theory`: it infers the likely key from the chords played so far and suggests ranked next chords, each with a reason. It works in every key and keeps the running progression.
 - Copilot project context in [COPILOT_CONTEXT.md](COPILOT_CONTEXT.md).
 
-The current chord prediction is a deterministic demo baseline. It is not yet a trained audio or vision model.
+- Browser chord recognition in `frontend/src/audio`: the microphone is analyzed about ten times a second, chroma is matched to a template for every chord in the library, and a chord that holds steady is added to the progression. Weak evidence shows `Unknown`. The mic is opened with echo cancellation, noise suppression, and auto gain off, since they distort guitar.
+
+Recognition has only been tested on synthetic audio, so treat its accuracy on a real guitar as unmeasured. Tapping a shape or a suggestion still works as a manual fallback. There is no vision-based chord detection yet.
 
 ## Architecture
 
@@ -68,10 +72,13 @@ Camera and microphone streams are requested by the browser and are not uploaded 
 
 - hand landmarks require the local `hand_landmarker.task` asset described below
 - the camera shows separate manual fretboard and strumming guides; automatic guitar geometry detection is not implemented yet
-- audio is not yet analyzed; the microphone status is currently informational
-- chord confidence is a fixed demo value
-- the vocabulary only covers `C`, `G`, `Am`, and `F`
-- the application does not yet account for tuning, capo, handedness, or guitar variation
+- audio recognition is new and has only been tested on synthetic guitar-like sound. Real accuracy is unmeasured and will depend on the microphone, the room, and the guitar
+- chords made of the same notes (C6 and Am7, for example) rely on the bass note, and seventh and sixth shapes often fall back to the plain triad when the extra note is quiet
+- the recognizer assumes standard tuning and one guitar; strummed chords work best, single notes and fast changes are not handled yet
+- the audio and vision models only target `C`, `G`, `Am`, and `F`; the suggestion engine and chord library already cover every root and quality
+- generated shapes are root-position, standard tuning, and ranked by a simple difficulty score, not by player testing; inversions and slash chords are not generated yet
+- the capo is set by hand; automatic capo and neck detection is not implemented
+- the application does not yet account for alternate tunings, handedness, or guitar variation
 
 ## Run the frontend
 
@@ -120,6 +127,16 @@ The camera panel displays the live `getUserMedia` video underneath the landmark 
 
 See [COPILOT_CONTEXT.md](COPILOT_CONTEXT.md) for architecture boundaries, privacy rules, and implementation guidance.
 
+## Hosting goals
+
+The intent is to publish FretFly as a public website, and possibly an installable app later. Work done now should keep that cheap and private:
+
+- **Core features run in the browser.** Audio, hand tracking, fusion, and suggestions should work with no server, so the site can be static hosting. The FastAPI service stays optional, for development and offline experiments.
+- **Camera and microphone need HTTPS.** Browsers only allow `getUserMedia` on `localhost` or secure origins, so any host must serve HTTPS.
+- **Model files must be hosted.** `hand_landmarker.task` and the exported audio model are gitignored, so the deploy step must fetch or upload them. Prefer self-hosting the MediaPipe WASM files over a CDN once the version is pinned.
+- **User data stays on the device.** In a hosted version, calibration and practice history belong in browser storage (IndexedDB or localStorage), not a server SQLite file, so no media or personal data is collected.
+- **Check licenses before publishing.** Confirm the GuitarSet license terms, and the licenses of MediaPipe and any other model, before shipping anything trained on or derived from them.
+
 ## Roadmap
 
 Green boxes are done, yellow are next, and red are decisions that block a phase. Arrows show what each phase needs first.
@@ -127,21 +144,23 @@ Green boxes are done, yellow are next, and red are decisions that block a phase.
 ```mermaid
 flowchart TD
 	P0["Phase 0: foundation<br/>frontend, backend, notebooks, transition table"]:::done
-	D1{{"Decide: Am fallback"}}:::decision
 	D2{{"Decide: browser inference<br/>(recommended)"}}:::decision
-	P1["Phase 1: suggestion engine<br/>backend endpoint, replace hardcoded next chord"]:::next
-	P2["Phase 2: browser audio<br/>Web Audio, chroma in TypeScript, ONNX Runtime Web"]:::next
+	D3{{"Decide: hosting target<br/>static site, PWA, or app"}}:::decision
+	P1["Phase 1: theory suggestion engine<br/>key inference, ranked suggestions with reasons"]:::done
+	P2["Phase 2: browser audio<br/>built: chroma and template recognizer in TypeScript<br/>open: accuracy on a real guitar"]:::next
 	P3["Phase 3: own recordings<br/>labeling mode, session-based split"]:::next
-	P4["Phase 4: vision gate<br/>hand in fretboard zone"]:::next
+	P4["Phase 4: vision<br/>auto neck and capo detection, hand position"]:::next
 	P5["Phase 5: fusion<br/>audio and vision to one chord or Unknown"]:::next
 	P6["Phase 6: live loop<br/>smoothed chord, suggestion, status"]:::next
 	P7["Phase 7: SQLite<br/>calibration and practice history"]:::next
 	P8["Phase 8: tests and release<br/>README, privacy notes, license check"]:::next
+	P9["Phase 9: hosting<br/>HTTPS static deploy, hosted assets, PWA"]:::next
 	LATER["Later<br/>multimodal PyTorch model, more chords, capo and tuning"]
 
-	P0 --> D1
+	P0 --> P1
 	P0 --> D2
-	D1 --> P1
+	P0 --> D3
+	D3 --> P7
 	D2 --> P2
 	P2 --> P3
 	P3 --> P5
@@ -150,7 +169,8 @@ flowchart TD
 	P5 --> P6
 	P6 --> P7
 	P7 --> P8
-	P8 --> LATER
+	P8 --> P9
+	P9 --> LATER
 
 	classDef done fill:#d4edda,stroke:#2e7d32,color:#1b1b1b
 	classDef next fill:#fff3cd,stroke:#b58900,color:#1b1b1b
@@ -160,12 +180,13 @@ flowchart TD
 | Phase | Goal | Done when |
 |---|---|---|
 | 0. Foundation | App shell, backend, training pipeline, transition table | Complete |
-| 1. Suggestion engine | Backend returns the likely next chord from the transition table | Each vocabulary chord returns a valid suggestion, and the frontend uses the endpoint |
-| 2. Browser audio | Mic audio becomes chroma in the browser and runs the exported model | Browser and Python chroma match on saved clips, and the app shows a chord with confidence or `Unknown` |
+| 1. Theory suggestion engine | Ranked next-chord suggestions with a reason each, from key inference and harmonic function, in any key, updating as the progression grows. Runs in the browser with no stored progressions | Complete: `frontend/src/theory`, covered by `npm test` in `frontend` |
+| 2. Browser audio | Mic audio becomes chroma in the browser and is matched to a template for every chord in the library, with the bass note separating chords that share notes | Built, and the app shows a chord with confidence or `Unknown`. Tested on synthetic audio only. Still open: measured accuracy on real guitar recordings, and whether the trained model adds anything over templates |
 | 3. Own recordings | Record and label your own clips for the app's setup | The model is validated on a separate recording session and the confusion matrix is reported |
-| 4. Vision gate | Use hand position in the fretboard zone as evidence | Measured effect on wrong audio guesses, with the gate on and off |
-| 5. Fusion | Combine audio and vision into one result | Compared audio-only, vision-only, and fused accuracy on recorded sessions |
+| 4. Vision | Find the guitar neck and any capo automatically, with no manual calibration, and track hand position along the neck. Needs a trained detector and labeled images | Neck and capo fret are detected on held-out photos and video, with measured accuracy, and hand position maps to a fret region |
+| 5. Fusion | Combine audio and vision into one result, using visual cues (fret region, shape, capo) to separate chords that sound alike | Compared audio-only, vision-only, and fused accuracy on recorded sessions, including the confusable pairs |
 | 6. Live loop | Smooth the chord estimate and update suggestions live | The chord doesn't flicker, and the status panel shows the real state |
 | 7. Persistence | Move calibration and practice history to SQLite | Calibration survives a reload, and sessions are stored locally |
 | 8. Release | Tests, docs, privacy notes, and the license check | Tests pass on a clean install, and the repo is ready to share |
+| 9. Hosting | Public site (and optionally an installable app) anyone can open | The production build loads over HTTPS, camera and mic work, hand model and exported audio model load from hosted assets, and no backend is required for core features |
 | Later | Multimodal model, more chords, capo and tuning | Each item has its own evaluation before it is claimed |
